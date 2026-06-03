@@ -1,0 +1,4 @@
+interface:
+  display_name: "高物讲义转课件"
+  short_description: "高中物理讲义模板化拆解生成可授课PPT courseware"
+  default_prompt: "请使用这个 skill 将高中物理讲义基于指定 PPT 模板转成课件，并完成公式、题号、图片、目录和版式检查。"
