@@ -15,6 +15,7 @@ from pathlib import Path
 DEFAULT_BAD_TOKENS = [
     "L1-",
     "sqrt",
+    "√",
     "表达式A",
     "表达式B",
     "表达式C",
@@ -24,18 +25,41 @@ DEFAULT_BAD_TOKENS = [
     "...",
 ]
 
+FORMULA_TEXT_RE = re.compile(
+    r"(?:F\s*=|E\s*=|kq|kQ|mg(?:tan|cos)|πkσ|q₁q₂|N·m²/C²|/[0-9]?[A-Za-zLRdrql₀θ²³₁₂₃₄₅₆₇₈₉₀]+)"
+)
+LABEL_RE = re.compile(r"^(?:P\d+[-－](?:例|练|巩固)\d+(?:-\d+)?|L\d+[-－](?:例|练)\d+|[A-D]\.?)$")
 
-def extract_text(pptx: Path) -> tuple[str, int, int, int]:
+
+def extract_text(pptx: Path) -> tuple[str, list[str], int, int, int, int, int]:
     with zipfile.ZipFile(pptx) as zf:
         slide_names = sorted(
             [name for name in zf.namelist() if re.match(r"ppt/slides/slide\d+\.xml$", name)],
             key=lambda name: int(re.search(r"slide(\d+)\.xml$", name).group(1)),
         )
-        xml = "\n".join(zf.read(name).decode("utf-8", errors="ignore") for name in slide_names)
+        slide_xml = [zf.read(name).decode("utf-8", errors="ignore") for name in slide_names]
+        xml = "\n".join(slide_xml)
         media_count = len([name for name in zf.namelist() if name.startswith("ppt/media/")])
     texts = [html.unescape(match.group(1)) for match in re.finditer(r"<a:t>(.*?)</a:t>", xml)]
     image_placements = xml.count("<a:blip ")
-    return "\n".join(texts), len(slide_names), media_count, image_placements
+    formula_object_count = xml.count("<m:oMath")
+    radical_object_count = xml.count("<m:rad")
+    plain_formula_text = [
+        text.strip()
+        for text in texts
+        if text.strip()
+        and not LABEL_RE.match(text.strip())
+        and FORMULA_TEXT_RE.search(text.strip())
+    ]
+    return (
+        "\n".join(texts),
+        plain_formula_text,
+        len(slide_names),
+        media_count,
+        image_placements,
+        formula_object_count,
+        radical_object_count,
+    )
 
 
 def load_labels(path: Path | None) -> list[str]:
@@ -53,10 +77,23 @@ def main() -> int:
     parser.add_argument("pptx", type=Path)
     parser.add_argument("--expect-labels", type=Path, help="Text file with one expected label per line.")
     parser.add_argument("--bad-token", action="append", default=[], help="Additional bad token to scan for.")
+    parser.add_argument(
+        "--allow-plain-formulas",
+        action="store_true",
+        help="Do not fail when formula-like strings remain in normal text runs.",
+    )
     parser.add_argument("--json", action="store_true", help="Print JSON only.")
     args = parser.parse_args()
 
-    text, slide_count, media_count, image_placements = extract_text(args.pptx)
+    (
+        text,
+        plain_formula_text,
+        slide_count,
+        media_count,
+        image_placements,
+        formula_object_count,
+        radical_object_count,
+    ) = extract_text(args.pptx)
     expected = load_labels(args.expect_labels)
     bad_tokens = DEFAULT_BAD_TOKENS + args.bad_token
     missing = [label for label in expected if label not in text]
@@ -69,9 +106,14 @@ def main() -> int:
         "labels_found": len(expected) - len(missing),
         "missing_labels": missing,
         "bad_tokens": found_bad,
+        "formula_objects": formula_object_count,
+        "radical_objects": radical_object_count,
+        "plain_formula_text": plain_formula_text,
         "media_count": media_count,
         "image_placements": image_placements,
-        "passed": not missing and not found_bad,
+        "passed": not missing
+        and not found_bad
+        and (args.allow_plain_formulas or not plain_formula_text),
     }
 
     if args.json:
@@ -81,6 +123,7 @@ def main() -> int:
         print(f"Slides: {slide_count}")
         print(f"Labels: {report['labels_found']}/{report['expected_labels']}")
         print(f"Media: {media_count}, image placements: {image_placements}")
+        print(f"Formula objects: {formula_object_count}, radical objects: {radical_object_count}")
         if missing:
             print("Missing labels:")
             for label in missing:
@@ -89,6 +132,12 @@ def main() -> int:
             print("Risky tokens:")
             for token in found_bad:
                 print(f"  - {token}")
+        if plain_formula_text and not args.allow_plain_formulas:
+            print("Formula-like text still in normal text runs:")
+            for item in plain_formula_text[:30]:
+                print(f"  - {item}")
+            if len(plain_formula_text) > 30:
+                print(f"  ... {len(plain_formula_text) - 30} more")
         print("PASS" if report["passed"] else "FAIL")
 
     return 0 if report["passed"] else 1
