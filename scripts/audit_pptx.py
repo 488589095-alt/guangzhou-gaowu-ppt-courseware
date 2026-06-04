@@ -31,7 +31,7 @@ FORMULA_TEXT_RE = re.compile(
 LABEL_RE = re.compile(r"^(?:P\d+[-－](?:例|练|巩固)\d+(?:-\d+)?|L\d+[-－](?:例|练)\d+|[A-D]\.?)$")
 
 
-def extract_text(pptx: Path) -> tuple[str, list[str], int, int, int, int, int]:
+def extract_text(pptx: Path) -> tuple[str, str, list[str], int, int, int, int, int]:
     with zipfile.ZipFile(pptx) as zf:
         slide_names = sorted(
             [name for name in zf.namelist() if re.match(r"ppt/slides/slide\d+\.xml$", name)],
@@ -41,6 +41,8 @@ def extract_text(pptx: Path) -> tuple[str, list[str], int, int, int, int, int]:
         xml = "\n".join(slide_xml)
         media_count = len([name for name in zf.namelist() if name.startswith("ppt/media/")])
     texts = [html.unescape(match.group(1)) for match in re.finditer(r"<a:t>(.*?)</a:t>", xml)]
+    math_texts = [html.unescape(match.group(1)) for match in re.finditer(r"<m:t>(.*?)</m:t>", xml)]
+    all_text = "\n".join(texts + math_texts)
     image_placements = xml.count("<a:blip ")
     formula_object_count = xml.count("<m:oMath")
     radical_object_count = xml.count("<m:rad")
@@ -52,7 +54,8 @@ def extract_text(pptx: Path) -> tuple[str, list[str], int, int, int, int, int]:
         and FORMULA_TEXT_RE.search(text.strip())
     ]
     return (
-        "\n".join(texts),
+        all_text,
+        xml,
         plain_formula_text,
         len(slide_names),
         media_count,
@@ -87,6 +90,7 @@ def main() -> int:
 
     (
         text,
+        raw_xml,
         plain_formula_text,
         slide_count,
         media_count,
@@ -98,6 +102,8 @@ def main() -> int:
     bad_tokens = DEFAULT_BAD_TOKENS + args.bad_token
     missing = [label for label in expected if label not in text]
     found_bad = [token for token in bad_tokens if token in text]
+    raw_sqrt_count = raw_xml.count("√")
+    raw_sqrt_without_radical = raw_sqrt_count > 0
 
     report = {
         "pptx": str(args.pptx),
@@ -106,6 +112,7 @@ def main() -> int:
         "labels_found": len(expected) - len(missing),
         "missing_labels": missing,
         "bad_tokens": found_bad,
+        "raw_sqrt_count": raw_sqrt_count,
         "formula_objects": formula_object_count,
         "radical_objects": radical_object_count,
         "plain_formula_text": plain_formula_text,
@@ -113,6 +120,7 @@ def main() -> int:
         "image_placements": image_placements,
         "passed": not missing
         and not found_bad
+        and not raw_sqrt_without_radical
         and (args.allow_plain_formulas or not plain_formula_text),
     }
 
@@ -124,6 +132,8 @@ def main() -> int:
         print(f"Labels: {report['labels_found']}/{report['expected_labels']}")
         print(f"Media: {media_count}, image placements: {image_placements}")
         print(f"Formula objects: {formula_object_count}, radical objects: {radical_object_count}")
+        if raw_sqrt_count:
+            print(f"Raw sqrt chars in XML: {raw_sqrt_count}")
         if missing:
             print("Missing labels:")
             for label in missing:

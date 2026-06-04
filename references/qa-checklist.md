@@ -43,4 +43,4 @@
 python3 scripts/audit_pptx.py 输出.pptx --expect-labels labels.txt
 ```
 
-检查输出中必须确认 `Formula objects` 大于 0，含根号课件必须确认 `radical objects` 大于 0，并且没有 `Formula-like text still in normal text runs`。同时如果项目中有模板字体检查脚本，也要运行字体/斜体规则检查。程序化检查通过后，仍需截图检查公式形态。
+检查输出中必须确认 `Formula objects` 大于 0，含根号课件必须确认 `radical objects` 大于 0，`raw_sqrt_count` 必须为 0，并且没有 `Formula-like text still in normal text runs`。同时如果项目中有模板字体检查脚本，也要运行字体/斜体规则检查。程序化检查通过后，仍需截图检查公式形态和文字重叠。
