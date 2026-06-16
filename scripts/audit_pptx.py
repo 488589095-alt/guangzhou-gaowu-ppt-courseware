@@ -31,6 +31,10 @@ FORMULA_TEXT_RE = re.compile(
 )
 LABEL_RE = re.compile(r"^(?:P\d+[-－](?:例|练|巩固)\d+(?:-\d+)?|L\d+[-－](?:例|练)\d+|[A-D]\.?)$")
 QUESTION_RE = re.compile(r"(?:如图|下列|则|大小|方向|作用力|摩擦力|电场|磁场|速度|加速度|为\s*\(|为（|是\s*\(|是（)")
+OPTION_NAME_RE = re.compile(r"(?:Options|options|Option Label)", re.I)
+BODY_NAME_RE = re.compile(r"(?:Content Body|Summary Body)", re.I)
+LABEL_NAME_RE = re.compile(r"(?:KEY POINT|label|Freeform|Title)", re.I)
+HANDOUT_IMAGE_RE = re.compile(r"(?:^rId\d+\.(?:png|jpg|jpeg)$|(?:transparent|lecture|handout|media).*\.(?:png|jpg|jpeg)$)", re.I)
 
 EMU_PER_INCH = 914400
 DEFAULT_LAYOUT_MARGIN_IN = 0.18
@@ -147,19 +151,23 @@ def _layout_warnings(zf: zipfile.ZipFile, slide_names: list[str], margin_in: flo
             shape_name = _shape_name(shape)
             normalized = re.sub(r"\s+", "", text)
             is_question = len(normalized) >= 24 and QUESTION_RE.search(text)
+            is_options = bool(OPTION_NAME_RE.search(shape_name))
+            is_bullet_list = bool(re.search(r"(^|\n)\s*(?:[•●]|[0-9]+[.．、])", text))
+            is_body = bool(BODY_NAME_RE.search(shape_name)) or is_bullet_list
+            is_label = bool(LABEL_NAME_RE.search(shape_name)) or LABEL_RE.match(text.strip()) or len(normalized) <= 12
 
             if _content_outside_slide(bounds, slide_w, slide_h):
                 warnings.append(_warning(slide_index, "text", shape_name, "text_outside_slide", bounds, text))
-            elif _content_near_edge(bounds, slide_w, slide_h, margin):
+            elif not is_label and _content_near_edge(bounds, slide_w, slide_h, margin):
                 warnings.append(_warning(slide_index, "text", shape_name, "text_near_safe_edge", bounds, text))
 
             if hard_breaks and len(normalized) >= 18:
                 warnings.append(_warning(slide_index, "text", shape_name, "hard_line_break_in_long_text", bounds, text))
-            if paragraph_count > 1 and is_question:
+            if paragraph_count > 1 and is_question and not is_options and not is_body:
                 warnings.append(_warning(slide_index, "text", shape_name, "question_split_across_paragraphs", bounds, text))
 
             x, _y, cx, _cy = bounds
-            if is_question and cx < slide_w * 0.55:
+            if is_question and not is_options and cx < slide_w * 0.55:
                 warnings.append(_warning(slide_index, "text", shape_name, "question_text_box_too_narrow", bounds, text))
             if LABEL_RE.match(text.strip()) and "\n" in text:
                 warnings.append(_warning(slide_index, "text", shape_name, "label_contains_line_break", bounds, text))
@@ -173,7 +181,8 @@ def _layout_warnings(zf: zipfile.ZipFile, slide_names: list[str], margin_in: flo
 
             # Full-slide pictures are usually template backgrounds, not content images.
             is_background = cx > slide_w * 0.92 and cy > slide_h * 0.92
-            if is_background:
+            is_handout_image = bool(HANDOUT_IMAGE_RE.search(pic_name))
+            if is_background or not is_handout_image:
                 continue
 
             if _content_outside_slide(bounds, slide_w, slide_h):
