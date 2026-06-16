@@ -22,6 +22,8 @@
 - 选项文字必须可编辑，不把整组选项做成图片。
 - 公式必须保持讲义原式，不把 `2√3mg/3` 改成等价的 `2mg/√3`。
 - 根号要带横线，分式要保持讲义中的上下分式形态。
+- 长题干不得莫名换行；图片选项题必须居中排版；复杂底版必须检查安全边距和不可见对象。
+- 选项中的分式、根式和括号表达式必须使用公式编辑器/OMML 或局部透明公式块。
 - 完成前必须检查题目覆盖、风险文本和公式形态。
 
 ## 目录结构
@@ -32,6 +34,7 @@ gaowu-ppt-courseware/
 ├── agents/
 │   └── openai.yaml
 ├── references/
+│   ├── business-feedback-rules.md
 │   ├── formula-rendering.md
 │   └── qa-checklist.md
 └── scripts/
@@ -81,7 +84,7 @@ P7-例4
 运行：
 
 ```bash
-python3 scripts/audit_pptx.py 输出.pptx --expect-labels labels.txt
+python3 scripts/audit_pptx.py 输出.pptx --expect-labels labels.txt --fail-layout
 ```
 
 脚本会检查：
@@ -90,6 +93,7 @@ python3 scripts/audit_pptx.py 输出.pptx --expect-labels labels.txt
 - 预期题号是否全部出现
 - 是否残留 `sqrt`、`L1-`、`表达式A/B/C/D`、`...` 等风险文本
 - PPT 中媒体和图片引用数量
+- 对象贴边/出界、图片选项偏心、硬换行、题干窄框等版式风险
 
 注意：脚本只能检查文本结构。根号是否带横线、上下分式是否和讲义一致，仍需要结合截图或公式源清单复核。
 
@@ -97,4 +101,5 @@ python3 scripts/audit_pptx.py 输出.pptx --expect-labels labels.txt
 
 - [SKILL.md](SKILL.md)：skill 主流程和触发规则
 - [公式渲染规则](references/formula-rendering.md)：根号、分式、原式一致性规则
+- [业务反馈问题固化规则](references/business-feedback-rules.md)：莫名换行、图片选项偏右、复杂底版贴边、公式编辑器问题
 - [验收清单](references/qa-checklist.md)：生成后检查项
