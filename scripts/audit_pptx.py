@@ -76,9 +76,75 @@ def _shape_bounds(elem: ET.Element) -> tuple[int, int, int, int] | None:
     )
 
 
+def _bounds_area(bounds: tuple[int, int, int, int]) -> int:
+    return max(0, bounds[2]) * max(0, bounds[3])
+
+
+def _intersect(a: tuple[int, int, int, int], b: tuple[int, int, int, int]) -> tuple[int, int, int, int] | None:
+    ax, ay, aw, ah = a
+    bx, by, bw, bh = b
+    left = max(ax, bx)
+    top = max(ay, by)
+    right = min(ax + aw, bx + bw)
+    bottom = min(ay + ah, by + bh)
+    if right <= left or bottom <= top:
+        return None
+    return left, top, right - left, bottom - top
+
+
 def _shape_name(elem: ET.Element) -> str:
     c_nv_pr = elem.find(".//p:cNvPr", PPT_NS)
     return c_nv_pr.get("name", "") if c_nv_pr is not None else ""
+
+
+def _font_size_pt(elem: ET.Element) -> int:
+    sizes: list[int] = []
+    for rpr in elem.findall(".//a:rPr", PPT_NS):
+        value = rpr.get("sz")
+        if value:
+            try:
+                sizes.append(int(value) // 100)
+            except ValueError:
+                pass
+    return max(sizes or [20])
+
+
+def _line_spacing_factor(elem: ET.Element) -> float:
+    for pct in elem.findall(".//a:pPr/a:lnSpc/a:spcPct", PPT_NS):
+        value = pct.get("val")
+        if value:
+            try:
+                return max(0.8, int(value) / 100000)
+            except ValueError:
+                pass
+    return 1.2
+
+
+def _text_units(text: str) -> float:
+    units = 0.0
+    for ch in text:
+        if ch.isspace():
+            units += 0.35
+        elif ord(ch) < 128:
+            units += 0.52
+        else:
+            units += 1.0
+    return units
+
+
+def _estimated_text_height(elem: ET.Element, bounds: tuple[int, int, int, int], text: str, paragraph_count: int) -> int:
+    _x, _y, width, _height = bounds
+    font_pt = _font_size_pt(elem)
+    line_spacing = _line_spacing_factor(elem)
+    width_pt = max(24.0, width / EMU_PER_INCH * 72)
+    units_per_line = max(4.0, width_pt / max(8.0, font_pt * 0.95))
+    lines = 0
+    for paragraph in text.splitlines() or [text]:
+        units = _text_units(paragraph)
+        lines += max(1, int((units + units_per_line - 0.01) // units_per_line))
+    paragraph_gap_pt = max(0, paragraph_count - 1) * 3
+    height_pt = lines * font_pt * line_spacing + paragraph_gap_pt + 8
+    return int(height_pt / 72 * EMU_PER_INCH)
 
 
 def _text_and_breaks(elem: ET.Element) -> tuple[str, int, int]:
@@ -120,6 +186,28 @@ def _warning(
     }
 
 
+def _overlap_warning(
+    slide: int,
+    first: dict[str, object],
+    second: dict[str, object],
+    overlap: tuple[int, int, int, int],
+    ratio: float,
+) -> dict[str, object]:
+    x, y, cx, cy = overlap
+    return {
+        "slide": slide,
+        "kind": f"{first['kind']}-{second['kind']}",
+        "name": f"{first['name']} <> {second['name']}",
+        "issue": "content_overlap",
+        "x_in": _emu_to_in(x),
+        "y_in": _emu_to_in(y),
+        "w_in": _emu_to_in(cx),
+        "h_in": _emu_to_in(cy),
+        "overlap_ratio": round(ratio, 3),
+        "text": (str(first.get("text") or "")[:36] + " | " + str(second.get("text") or "")[:36]).strip(),
+    }
+
+
 def _content_near_edge(
     bounds: tuple[int, int, int, int],
     slide_w: int,
@@ -135,6 +223,19 @@ def _content_outside_slide(bounds: tuple[int, int, int, int], slide_w: int, slid
     return x < 0 or y < 0 or x + cx > slide_w or y + cy > slide_h
 
 
+def _is_template_or_label_text(shape_name: str, text: str) -> bool:
+    normalized = re.sub(r"\s+", "", text)
+    return bool(LABEL_NAME_RE.search(shape_name)) or bool(LABEL_RE.match(text.strip())) or len(normalized) <= 12
+
+
+def _is_probable_content_image(bounds: tuple[int, int, int, int], slide_w: int, slide_h: int, pic_name: str) -> bool:
+    x, y, cx, cy = bounds
+    is_background = cx > slide_w * 0.92 and cy > slide_h * 0.92
+    if is_background:
+        return False
+    return bool(HANDOUT_IMAGE_RE.search(pic_name))
+
+
 def _layout_warnings(zf: zipfile.ZipFile, slide_names: list[str], margin_in: float) -> list[dict[str, object]]:
     slide_w, slide_h = _slide_size(zf)
     margin = int(margin_in * EMU_PER_INCH)
@@ -142,6 +243,11 @@ def _layout_warnings(zf: zipfile.ZipFile, slide_names: list[str], margin_in: flo
 
     for slide_index, name in enumerate(slide_names, start=1):
         root = ET.fromstring(zf.read(name))
+        content_items: list[dict[str, object]] = []
+        has_courseware_content = False
+        has_options_text_shape = any(
+            OPTION_NAME_RE.search(_shape_name(shape)) for shape in root.findall(".//p:sp", PPT_NS)
+        )
 
         for shape in root.findall(".//p:sp", PPT_NS):
             bounds = _shape_bounds(shape)
@@ -154,7 +260,9 @@ def _layout_warnings(zf: zipfile.ZipFile, slide_names: list[str], margin_in: flo
             is_options = bool(OPTION_NAME_RE.search(shape_name))
             is_bullet_list = bool(re.search(r"(^|\n)\s*(?:[•●]|[0-9]+[.．、])", text))
             is_body = bool(BODY_NAME_RE.search(shape_name)) or is_bullet_list
-            is_label = bool(LABEL_NAME_RE.search(shape_name)) or LABEL_RE.match(text.strip()) or len(normalized) <= 12
+            is_label = _is_template_or_label_text(shape_name, text)
+            if is_question or is_options or is_body or QUESTION_RE.search(text):
+                has_courseware_content = True
 
             if _content_outside_slide(bounds, slide_w, slide_h):
                 warnings.append(_warning(slide_index, "text", shape_name, "text_outside_slide", bounds, text))
@@ -171,6 +279,26 @@ def _layout_warnings(zf: zipfile.ZipFile, slide_names: list[str], margin_in: flo
                 warnings.append(_warning(slide_index, "text", shape_name, "question_text_box_too_narrow", bounds, text))
             if LABEL_RE.match(text.strip()) and "\n" in text:
                 warnings.append(_warning(slide_index, "text", shape_name, "label_contains_line_break", bounds, text))
+            is_courseware_text = is_question or is_options or is_body
+            if not is_label and is_courseware_text:
+                estimated_h = _estimated_text_height(shape, bounds, text, paragraph_count)
+                x, y, cx, cy = bounds
+                if estimated_h > cy * 1.08:
+                    overflow = (x, y, cx, estimated_h)
+                    item = _warning(slide_index, "text", shape_name, "text_overflow_estimated", overflow, text)
+                    item["box_h_in"] = _emu_to_in(cy)
+                    item["estimated_h_in"] = _emu_to_in(estimated_h)
+                    warnings.append(item)
+                content_items.append(
+                    {
+                        "kind": "text",
+                        "name": shape_name,
+                        "bounds": (x, y, cx, max(cy, estimated_h)),
+                        "text": text,
+                        "is_options": is_options,
+                        "is_body": is_body,
+                    }
+                )
 
         for picture in root.findall(".//p:pic", PPT_NS):
             bounds = _shape_bounds(picture)
@@ -179,10 +307,8 @@ def _layout_warnings(zf: zipfile.ZipFile, slide_names: list[str], margin_in: flo
             pic_name = _shape_name(picture)
             x, y, cx, cy = bounds
 
-            # Full-slide pictures are usually template backgrounds, not content images.
-            is_background = cx > slide_w * 0.92 and cy > slide_h * 0.92
-            is_handout_image = bool(HANDOUT_IMAGE_RE.search(pic_name))
-            if is_background or not is_handout_image:
+            is_handout_image = _is_probable_content_image(bounds, slide_w, slide_h, pic_name)
+            if not is_handout_image:
                 continue
 
             if _content_outside_slide(bounds, slide_w, slide_h):
@@ -192,8 +318,30 @@ def _layout_warnings(zf: zipfile.ZipFile, slide_names: list[str], margin_in: flo
 
             is_wide_option_image = cx > slide_w * 0.35 and cy > slide_h * 0.12
             center_offset = abs((x + cx / 2) - slide_w / 2)
-            if is_wide_option_image and center_offset > slide_w * 0.08:
+            if is_wide_option_image and not has_options_text_shape and center_offset > slide_w * 0.08:
                 warnings.append(_warning(slide_index, "image", pic_name, "wide_image_not_centered", bounds))
+            content_items.append({"kind": "image", "name": pic_name, "bounds": bounds, "text": ""})
+
+        if has_courseware_content:
+            for idx, first in enumerate(content_items):
+                for second in content_items[idx + 1 :]:
+                    overlap = _intersect(first["bounds"], second["bounds"])  # type: ignore[arg-type]
+                    if overlap is None:
+                        continue
+                    ow, oh = overlap[2], overlap[3]
+                    if ow < margin * 0.35 or oh < margin * 0.25:
+                        continue
+                    ratio = _bounds_area(overlap) / max(1, min(_bounds_area(first["bounds"]), _bounds_area(second["bounds"])))  # type: ignore[arg-type]
+                    if ratio < 0.035:
+                        continue
+                    # A very wide option text box may intentionally reserve blank
+                    # room for a right-side diagram. Flag only if the intersection
+                    # is not confined to the far empty edge of the option box.
+                    if {first["kind"], second["kind"]} == {"text", "image"}:
+                        text_item = first if first["kind"] == "text" else second
+                        if text_item.get("is_options") and ratio < 0.12:
+                            continue
+                    warnings.append(_overlap_warning(slide_index, first, second, overlap, ratio))
 
     return warnings
 

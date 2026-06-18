@@ -236,9 +236,14 @@ def text_units(text: str) -> float:
 
 def estimated_text_height(text: str, width: int, pt: int, line_spacing: float = 1.2) -> int:
     width_in = max(1.0, to_in(width))
-    chars_per_line = max(8.0, width_in * (72 / max(pt, 12)) * 1.95)
-    lines = max(1, math.ceil(text_units(text) / chars_per_line))
-    return emu(lines * (pt / 72) * line_spacing + 0.14)
+    # WPS/PowerPoint Chinese text wraps much closer to 1 em per Han
+    # character than the earlier optimistic model. A conservative estimate is
+    # required because text overflow is the highest-priority failure mode.
+    chars_per_line = max(4.0, width_in * (72 / max(pt, 12)) / 0.95)
+    paragraphs = [line for line in text.splitlines() if line.strip()] or [text]
+    lines = sum(max(1, math.ceil(text_units(line) / chars_per_line)) for line in paragraphs)
+    paragraph_gap = max(0, len(paragraphs) - 1) * 0.04
+    return emu(lines * (pt / 72) * line_spacing + paragraph_gap + 0.14)
 
 
 def normalize_sentence(text: str) -> str:
@@ -442,6 +447,16 @@ def make_option_para(text: str, style: dict[str, object]):
     return p_el
 
 
+def option_label_shapes(root) -> list:
+    labels = []
+    for sp in root.findall(".//p:sp", NS):
+        name = shape_name(sp)
+        text = text_content(sp, "").strip()
+        if "Option Label" in name and re.match(r"^[A-D]$", text):
+            labels.append(sp)
+    return labels
+
+
 def dynamic_pictures(root) -> list:
     pics = []
     for pic in root.findall(".//p:pic", NS):
@@ -480,8 +495,209 @@ def move_inside(bounds: tuple[int, int, int, int], safe: tuple[int, int, int, in
     return x, y, w, h
 
 
+def fit_into_box(bounds: tuple[int, int, int, int], box: tuple[int, int, int, int]) -> tuple[int, int, int, int]:
+    _x, _y, w, h = bounds
+    bx, by, bw, bh = box
+    if w <= 0 or h <= 0 or bw <= 0 or bh <= 0:
+        return bounds
+    scale = min(bw / w, bh / h)
+    nw = int(w * scale)
+    nh = int(h * scale)
+    return bx + int((bw - nw) / 2), by + int((bh - nh) / 2), nw, nh
+
+
+def has_options_shape(root) -> bool:
+    return any(OPTION_NAME_RE.search(shape_name(sp)) for sp in root.findall(".//p:sp", NS))
+
+
+def find_first_text_shape(root, pattern: re.Pattern[str]):
+    for sp in root.findall(".//p:sp", NS):
+        if pattern.search(shape_name(sp)) and text_paragraphs(sp):
+            return sp
+    return None
+
+
+def layout_question_media(root, slide_w: int, slide_h: int, safe: tuple[int, int, int, int]) -> int:
+    """Make stem/options/images mutually exclusive on question slides."""
+
+    changed = 0
+    stem = find_first_text_shape(root, QUESTION_NAME_RE)
+    options = find_first_text_shape(root, OPTION_NAME_RE)
+    pics = dynamic_pictures(root)
+    if stem is None or options is None or not pics:
+        return 0
+
+    left, _top, right, bottom = safe
+    gap = emu(0.3 if to_in(slide_w) <= 10.5 else 0.42)
+    stem_bounds = shape_bounds(stem)
+    opt_bounds = shape_bounds(options)
+    if stem_bounds is None or opt_bounds is None:
+        return 0
+
+    sx, sy, sw, sh = stem_bounds
+    if sx < left or sx + sw > right:
+        set_bounds(stem, max(sx, left), sy, right - max(sx, left), sh)
+        changed += 1
+    content_top = max(opt_bounds[1], sy + sh + emu(0.22))
+    content_h = max(emu(1.4), bottom - content_top)
+    safe_w = right - left
+
+    # More than two diagrams with option labels are usually image-option pages.
+    # Those should remain as a centered group rather than being forced into a
+    # right-side figure column.
+    if len(pics) > 2:
+        xs, ys, rights, bottoms = [], [], [], []
+        for pic in pics:
+            b = shape_bounds(pic)
+            if b is None:
+                continue
+            xs.append(b[0])
+            ys.append(b[1])
+            rights.append(b[0] + b[2])
+            bottoms.append(b[1] + b[3])
+        if not xs:
+            return changed
+        group_x, group_y = min(xs), min(ys)
+        group_w, group_h = max(rights) - group_x, max(bottoms) - group_y
+        max_w = safe_w
+        max_h = content_h
+        scale = min(1.0, max_w / max(1, group_w), max_h / max(1, group_h))
+        target_x = left + int((safe_w - int(group_w * scale)) / 2)
+        target_y = content_top + int((content_h - int(group_h * scale)) / 2)
+        dx = target_x - int(group_x * scale)
+        dy = target_y - int(group_y * scale)
+        for pic in pics:
+            b = shape_bounds(pic)
+            if b is None:
+                continue
+            nx = int(b[0] * scale) + dx
+            ny = int(b[1] * scale) + dy
+            nw = int(b[2] * scale)
+            nh = int(b[3] * scale)
+            set_bounds(pic, nx, ny, nw, nh)
+            changed += 1
+        return changed
+
+    opt_ratio = 0.48 if to_in(slide_w) <= 10.5 else 0.43
+    min_opt_w = emu(3.65 if to_in(slide_w) <= 10.5 else 6.4 if to_in(slide_w) >= 18 else 4.8)
+    max_opt_w = safe_w - gap - emu(2.0)
+    opt_w = max(emu(2.3), min(max_opt_w, max(min_opt_w, int(safe_w * opt_ratio))))
+    opt_text = "\n".join(normalize_options(text_paragraphs(options)))
+    opt_style = first_run_style(options)
+    opt_size = int(opt_style.get("size", 22))
+    needed_h = estimated_text_height(opt_text, opt_w, opt_size, 1.5)
+    if needed_h > content_h:
+        min_fig_w = emu(2.05 if to_in(slide_w) <= 10.5 else 3.1 if to_in(slide_w) >= 18 else 2.6)
+        max_by_image = safe_w - gap - min_fig_w
+        target_w = int(opt_w * min(1.55, needed_h / max(1, content_h))) + emu(0.2)
+        opt_w = min(max_by_image, max(opt_w, target_w))
+        needed_h = estimated_text_height(opt_text, opt_w, opt_size, 1.5)
+    if needed_h > content_h * 1.05:
+        shrink = min(4, math.ceil((needed_h / max(1, content_h) - 1) * 4))
+        opt_style["size"] = max(16, opt_size - shrink)
+    fig_x = left + opt_w + gap
+    fig_w = max(emu(1.5), right - fig_x)
+    set_bounds(options, left, content_top, opt_w, content_h)
+    replace_paragraphs(options, [make_option_para(opt, opt_style) for opt in normalize_options(text_paragraphs(options))])
+    changed += 1
+
+    if len(pics) == 1:
+        b = shape_bounds(pics[0])
+        if b is not None:
+            nb = fit_into_box(b, (fig_x, content_top, fig_w, content_h))
+            set_bounds(pics[0], *nb)
+            changed += 1
+    else:
+        each_h = max(emu(1.0), int((content_h - gap) / 2))
+        for idx, pic in enumerate(pics[:2]):
+            b = shape_bounds(pic)
+            if b is None:
+                continue
+            box_y = content_top + idx * (each_h + gap)
+            nb = fit_into_box(b, (fig_x, box_y, fig_w, each_h))
+            set_bounds(pic, *nb)
+            changed += 1
+
+    return changed
+
+
+def layout_image_option_slide(root, slide_w: int, slide_h: int, safe: tuple[int, int, int, int]) -> int:
+    """Reflow question pages whose A/B/C/D choices are diagrams."""
+
+    stem = find_first_text_shape(root, QUESTION_NAME_RE)
+    if stem is None or has_options_shape(root):
+        return 0
+    labels = option_label_shapes(root)
+    pics = dynamic_pictures(root)
+    if len(labels) < 2 or len(pics) < 3:
+        return 0
+
+    stem_bounds = shape_bounds(stem)
+    if stem_bounds is None:
+        return 0
+    left, _top, right, bottom = safe
+    gap = emu(0.24 if to_in(slide_w) <= 10.5 else 0.35)
+    content_top = stem_bounds[1] + stem_bounds[3] + emu(0.28)
+    content_h = max(emu(1.3), bottom - content_top)
+    changed = 0
+
+    option_pics = pics
+    main_pic = None
+    if len(pics) == len(labels) + 1:
+        ordered = sorted(pics, key=lambda p: (shape_bounds(p) or (0, 0, 0, 0))[1])
+        main_pic = ordered[0]
+        option_pics = [p for p in pics if p is not main_pic]
+        main_h = min(emu(1.15), max(emu(0.8), int(content_h * 0.32)))
+        main_box = (right - emu(2.2), content_top, emu(2.0), main_h)
+        b = shape_bounds(main_pic)
+        if b is not None:
+            set_bounds(main_pic, *fit_into_box(b, main_box))
+            changed += 1
+        content_top += main_h + gap
+        content_h = max(emu(1.0), bottom - content_top)
+
+    # If labels already form two rows, keep a 2x2 rhythm; otherwise use one
+    # row for compact option images.
+    label_rows = sorted({round((shape_bounds(label) or (0, 0, 0, 0))[1] / emu(0.35)) for label in labels})
+    rows = 2 if len(label_rows) >= 2 else 1
+    if len(option_pics) > 4:
+        rows = 2
+    cols = max(1, math.ceil(len(option_pics) / rows))
+    cell_w = (right - left) / cols
+    cell_h = content_h / rows
+
+    sorted_pics = sorted(option_pics, key=lambda p: ((shape_bounds(p) or (0, 0, 0, 0))[1], (shape_bounds(p) or (0, 0, 0, 0))[0]))
+    sorted_labels = sorted(labels, key=lambda sp: text_content(sp, ""))
+    for idx, pic in enumerate(sorted_pics):
+        row = idx // cols
+        col = idx % cols
+        cell_x = int(left + col * cell_w)
+        cell_y = int(content_top + row * cell_h)
+        label_w = emu(0.32)
+        image_box = (
+            cell_x + label_w + emu(0.08),
+            cell_y,
+            int(cell_w) - label_w - emu(0.12),
+            max(emu(0.6), int(cell_h) - emu(0.28)),
+        )
+        b = shape_bounds(pic)
+        if b is not None:
+            set_bounds(pic, *fit_into_box(b, image_box))
+            changed += 1
+        if idx < len(sorted_labels):
+            label = sorted_labels[idx]
+            lb = shape_bounds(label)
+            if lb is not None:
+                set_bounds(label, cell_x + emu(0.05), cell_y + int(cell_h) - emu(0.38), lb[2], lb[3])
+                changed += 1
+
+    return changed
+
+
 def center_wide_images(root, slide_w: int, slide_h: int, safe: tuple[int, int, int, int]) -> int:
     changed = 0
+    if has_options_shape(root) or len(option_label_shapes(root)) >= 2:
+        return changed
     left, top, right, bottom = safe
     for pic in dynamic_pictures(root):
         b = shape_bounds(pic)
@@ -581,7 +797,10 @@ def repair_pptx(src: Path, dst: Path) -> dict[str, int]:
         text_stats = repair_text_layout(root, slide_w, slide_h)
         for key in ("stems", "options", "bodies"):
             totals[key] += text_stats[key]
-        totals["images"] += center_wide_images(root, slide_w, slide_h, safe_area(slide_w, slide_h))
+        safe = safe_area(slide_w, slide_h)
+        totals["images"] += layout_question_media(root, slide_w, slide_h, safe)
+        totals["images"] += layout_image_option_slide(root, slide_w, slide_h, safe)
+        totals["images"] += center_wide_images(root, slide_w, slide_h, safe)
         entries[name] = xml_bytes(root)
 
     dst.parent.mkdir(parents=True, exist_ok=True)
