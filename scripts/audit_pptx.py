@@ -27,7 +27,7 @@ DEFAULT_BAD_TOKENS = [
 ]
 
 FORMULA_TEXT_RE = re.compile(
-    r"(?:F\s*=|E\s*=|kq|kQ|mg(?:tan|cos)|πkσ|q₁q₂|N·m²/C²|/[0-9]?[A-Za-zLRdrql₀θ²³₁₂₃₄₅₆₇₈₉₀]+)"
+    r"(?:F\s*=|Ff\s*=|E\s*=|kq|kQ|mg(?:tan|cos)|πkσ|q₁q₂|N·m²/C²|≤|≥|/[0-9]?[A-Za-zLRdrql₀θ²³₁₂₃₄₅₆₇₈₉₀]+)"
 )
 LABEL_RE = re.compile(r"^(?:P\d+[-－](?:例|练|巩固)\d+(?:-\d+)?|L\d+[-－](?:例|练)\d+|[A-D]\.?)$")
 QUESTION_RE = re.compile(r"(?:如图|下列|则|大小|方向|作用力|摩擦力|电场|磁场|速度|加速度|为\s*\(|为（|是\s*\(|是（)")
@@ -227,14 +227,14 @@ def _safe_area(slide_w: int, slide_h: int) -> tuple[int, int, int, int]:
         return (
             int(0.62 * EMU_PER_INCH),
             int(0.62 * EMU_PER_INCH),
-            slide_w - int(0.85 * EMU_PER_INCH),
+            slide_w - int(0.55 * EMU_PER_INCH),
             slide_h - int(0.78 * EMU_PER_INCH),
         )
     return (
-        int((0.75 if w_in <= 14 else 1.15) * EMU_PER_INCH),
-        int(0.65 * EMU_PER_INCH),
-        slide_w - int((0.75 if w_in <= 14 else 0.85) * EMU_PER_INCH),
-        slide_h - int(0.62 * EMU_PER_INCH),
+        int((0.75 if w_in <= 14 else 1.55) * EMU_PER_INCH),
+        int((0.65 if w_in <= 14 else 0.9) * EMU_PER_INCH),
+        slide_w - int((0.75 if w_in <= 14 else 1.25) * EMU_PER_INCH),
+        slide_h - int((0.62 if w_in <= 14 else 0.9) * EMU_PER_INCH),
     )
 
 

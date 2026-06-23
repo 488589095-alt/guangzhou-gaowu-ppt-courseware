@@ -38,7 +38,13 @@ CONTENT_NAME_RE = re.compile(r"(?:Content Body|Summary Body|Text)", re.I)
 LABEL_NAME_RE = re.compile(r"(?:KEY POINT|label|Option Label|Freeform)", re.I)
 OPTION_PREFIX_RE = re.compile(r"^([A-D][．.]\s*)(.+)$")
 FORMULA_ONLY_RE = re.compile(r"^[\sA-Za-z0-9₀₁₂₃₄₅₆₇₈₉ₐᵦαβθπσμΔδFNGQklrabvxyzXYZRLO＋+\-*/=<>≤≥（）()\[\]{}√²³^·.,，]+$")
-FORMULA_RISK_RE = re.compile(r"(√|/|²|³|₀|₁|₂|₃|₄|₅|₆|₇|₈|₉|[A-Za-z]\s*=)")
+FORMULA_RISK_RE = re.compile(r"(√|/|²|³|₀|₁|₂|₃|₄|₅|₆|₇|₈|₉|≤|≥|[A-Za-z]\s*=)")
+INLINE_FORMULA_RE = re.compile(
+    r"(?:[A-Za-z][A-Za-z]?\s*=\s*[A-Za-z0-9μ₀₁₂₃₄₅₆₇₈₉ₐᵦ²³]+(?:[+\-*/][A-Za-z0-9μ₀₁₂₃₄₅₆₇₈₉ₐᵦ²³]+)*)"
+    r"|(?:[A-Za-z][₀₁₂₃₄₅₆₇₈₉ₐᵦ]+)"
+    r"|(?:F[0-9₀₁₂₃₄₅₆₇₈₉])"
+    r"|(?:[0-9]+≤[A-Za-z]≤[0-9]*N?)"
+)
 
 
 def q(ns: str, tag: str) -> str:
@@ -215,6 +221,10 @@ def replace_paragraphs(sp, paragraphs) -> None:
         tx.insert(0, body)
     body.set("wrap", "square")
     body.set("anchor", "t")
+    body.set("lIns", "0")
+    body.set("rIns", "0")
+    body.set("tIns", "0")
+    body.set("bIns", "0")
     for child in list(tx):
         if child.tag == q(A, "p"):
             tx.remove(child)
@@ -244,6 +254,12 @@ def estimated_text_height(text: str, width: int, pt: int, line_spacing: float = 
     lines = sum(max(1, math.ceil(text_units(line) / chars_per_line)) for line in paragraphs)
     paragraph_gap = max(0, len(paragraphs) - 1) * 0.04
     return emu(lines * (pt / 72) * line_spacing + paragraph_gap + 0.14)
+
+
+def estimated_single_line_width(text: str, pt: int) -> int:
+    # This is deliberately a little generous because WPS uses text-box
+    # insets and mixed CJK/Latin metrics that otherwise cause surprise wraps.
+    return emu(text_units(text) * (pt / 72) * 0.74 + 0.22)
 
 
 def normalize_sentence(text: str) -> str:
@@ -429,8 +445,19 @@ def make_text_para(text: str, style: dict[str, object], line_spacing: int | None
     if line_spacing == OPTION_LINE_SPACING:
         add_spacing(ppr, before=0, after=OPTION_SPACE_AFTER)
     p_el.append(ppr)
-    p_el.append(make_run(text, style))
+    append_mixed_runs(p_el, text, style)
     return p_el
+
+
+def append_mixed_runs(p_el, text: str, style: dict[str, object]) -> None:
+    pos = 0
+    for match in INLINE_FORMULA_RE.finditer(text):
+        if match.start() > pos:
+            p_el.append(make_run(text[pos : match.start()], style))
+        p_el.append(make_formula_inline(match.group(0), style))
+        pos = match.end()
+    if pos < len(text):
+        p_el.append(make_run(text[pos:], style))
 
 
 def make_option_para(text: str, style: dict[str, object]):
@@ -443,7 +470,7 @@ def make_option_para(text: str, style: dict[str, object]):
         p_el.append(make_run(m.group(1), style))
         p_el.append(make_formula_inline(m.group(2), style))
     else:
-        p_el.append(make_run(text, style))
+        append_mixed_runs(p_el, text, style)
     return p_el
 
 
@@ -475,14 +502,14 @@ def safe_area(slide_w: int, slide_h: int) -> tuple[int, int, int, int]:
         # The parchment/Egypt-style templates have an inner ornamental frame.
         # Content must stay inside that frame, not merely inside the slide.
         left = emu(0.62)
-        right = slide_w - emu(0.85)
+        right = slide_w - emu(0.55)
         top = emu(0.62)
         bottom = slide_h - emu(0.78)
     else:
-        left = emu(0.75 if w_in <= 14 else 1.15)
-        right = slide_w - emu(0.75 if w_in <= 14 else 0.85)
-        top = emu(0.65)
-        bottom = slide_h - emu(0.62)
+        left = emu(0.75 if w_in <= 14 else 1.55)
+        right = slide_w - emu(0.75 if w_in <= 14 else 1.25)
+        top = emu(0.65 if w_in <= 14 else 0.9)
+        bottom = slide_h - emu(0.62 if w_in <= 14 else 0.9)
     return left, top, right, bottom
 
 
@@ -588,19 +615,24 @@ def layout_question_media(root, slide_w: int, slide_h: int, safe: tuple[int, int
             changed += 1
         return changed
 
-    opt_ratio = 0.62 if to_in(slide_w) <= 10.5 else 0.58
-    min_opt_w = emu(5.35 if to_in(slide_w) <= 10.5 else 7.6 if to_in(slide_w) >= 18 else 6.65)
-    max_opt_w = safe_w - gap - emu(2.0)
+    opt_ratio = 0.72 if to_in(slide_w) <= 10.5 else 0.6
+    min_opt_w = emu(6.15 if to_in(slide_w) <= 10.5 else 7.6 if to_in(slide_w) >= 18 else 6.65)
+    max_opt_w = safe_w - gap - emu(1.45 if to_in(slide_w) <= 10.5 else 3.1 if to_in(slide_w) >= 18 else 2.6)
     opt_w = max(emu(2.3), min(max_opt_w, max(min_opt_w, int(safe_w * opt_ratio))))
     opt_text = "\n".join(normalize_options(text_paragraphs(options)))
     opt_style = first_run_style(options)
     opt_size = int(opt_style.get("size", 22))
+    no_wrap_w = max(
+        [estimated_single_line_width(opt, opt_size) for opt in normalize_options(text_paragraphs(options))] or [0]
+    )
+    if no_wrap_w <= max_opt_w:
+        opt_w = max(opt_w, no_wrap_w)
     needed_h = estimated_text_height(opt_text, opt_w, opt_size, 1.5)
     if needed_h > content_h:
-        min_fig_w = emu(2.05 if to_in(slide_w) <= 10.5 else 3.1 if to_in(slide_w) >= 18 else 2.6)
+        min_fig_w = emu(1.45 if to_in(slide_w) <= 10.5 else 3.1 if to_in(slide_w) >= 18 else 2.6)
         max_by_image = safe_w - gap - min_fig_w
         target_w = int(opt_w * min(1.55, needed_h / max(1, content_h))) + emu(0.2)
-        opt_w = min(max_by_image, max(opt_w, target_w))
+        opt_w = min(max_by_image, max(opt_w, target_w, min(no_wrap_w, max_by_image)))
         needed_h = estimated_text_height(opt_text, opt_w, opt_size, 1.5)
     if needed_h > content_h * 1.05:
         shrink = min(4, math.ceil((needed_h / max(1, content_h) - 1) * 4))
@@ -678,6 +710,9 @@ def layout_image_option_slide(root, slide_w: int, slide_h: int, safe: tuple[int,
 
     sorted_pics = sorted(option_pics, key=lambda p: ((shape_bounds(p) or (0, 0, 0, 0))[1], (shape_bounds(p) or (0, 0, 0, 0))[0]))
     sorted_labels = sorted(labels, key=lambda sp: text_content(sp, ""))
+    label_style = first_run_style(stem)
+    label_style["color"] = str(label_style.get("color", "5A2A1B"))
+    label_style["bold"] = True
     for idx, pic in enumerate(sorted_pics):
         row = idx // cols
         col = idx % cols
@@ -691,14 +726,23 @@ def layout_image_option_slide(root, slide_w: int, slide_h: int, safe: tuple[int,
             max(emu(0.6), int(cell_h) - emu(0.28)),
         )
         b = shape_bounds(pic)
+        placed = None
         if b is not None:
-            set_bounds(pic, *fit_into_box(b, image_box))
+            placed = fit_into_box(b, image_box)
+            set_bounds(pic, *placed)
             changed += 1
         if idx < len(sorted_labels):
             label = sorted_labels[idx]
             lb = shape_bounds(label)
             if lb is not None:
-                set_bounds(label, cell_x + emu(0.05), cell_y + int(cell_h) - emu(0.38), lb[2], lb[3])
+                label_text = text_content(label, "")
+                label_x = cell_x + emu(0.05)
+                label_y = cell_y + int(cell_h) - emu(0.38)
+                if placed is not None:
+                    label_x = max(left, placed[0] - lb[2] - emu(0.08))
+                    label_y = min(bottom - lb[3], placed[1] + placed[3] - lb[3] - emu(0.02))
+                set_bounds(label, label_x, label_y, lb[2], lb[3])
+                replace_paragraphs(label, [make_text_para(label_text, label_style, align="ctr")])
                 changed += 1
 
     return changed
@@ -784,7 +828,8 @@ def repair_text_layout(root, slide_w: int, slide_h: int) -> dict[str, int]:
             stats["options"] += 1
         elif CONTENT_NAME_RE.search(name) and not LABEL_NAME_RE.search(name):
             normalized = normalize_bullets(paras)
-            if normalized != paras and normalized:
+            should_rewrite = normalized != paras or any(INLINE_FORMULA_RE.search(p) for p in (normalized or paras))
+            if should_rewrite and normalized:
                 replace_paragraphs(sp, [make_text_para(p, style, line_spacing=125000) for p in normalized])
                 stats["bodies"] += 1
             nx = max(x, left)
