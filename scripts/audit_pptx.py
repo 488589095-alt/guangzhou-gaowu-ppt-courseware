@@ -221,6 +221,29 @@ def _content_near_edge(
     return x < margin or y < margin or slide_w - (x + cx) < margin or slide_h - (y + cy) < margin
 
 
+def _safe_area(slide_w: int, slide_h: int) -> tuple[int, int, int, int]:
+    w_in = slide_w / EMU_PER_INCH
+    if w_in <= 10.5:
+        return (
+            int(0.62 * EMU_PER_INCH),
+            int(0.62 * EMU_PER_INCH),
+            slide_w - int(0.85 * EMU_PER_INCH),
+            slide_h - int(0.78 * EMU_PER_INCH),
+        )
+    return (
+        int((0.75 if w_in <= 14 else 1.15) * EMU_PER_INCH),
+        int(0.65 * EMU_PER_INCH),
+        slide_w - int((0.75 if w_in <= 14 else 0.85) * EMU_PER_INCH),
+        slide_h - int(0.62 * EMU_PER_INCH),
+    )
+
+
+def _outside_safe_area(bounds: tuple[int, int, int, int], safe: tuple[int, int, int, int]) -> bool:
+    x, y, cx, cy = bounds
+    left, top, right, bottom = safe
+    return x < left or y < top or x + cx > right or y + cy > bottom
+
+
 def _content_outside_slide(bounds: tuple[int, int, int, int], slide_w: int, slide_h: int) -> bool:
     x, y, cx, cy = bounds
     return x < 0 or y < 0 or x + cx > slide_w or y + cy > slide_h
@@ -251,6 +274,7 @@ def _layout_warnings(zf: zipfile.ZipFile, slide_names: list[str], margin_in: flo
         has_options_text_shape = any(
             OPTION_NAME_RE.search(_shape_name(shape)) for shape in root.findall(".//p:sp", PPT_NS)
         )
+        safe = _safe_area(slide_w, slide_h)
 
         for shape in root.findall(".//p:sp", PPT_NS):
             bounds = _shape_bounds(shape)
@@ -264,12 +288,17 @@ def _layout_warnings(zf: zipfile.ZipFile, slide_names: list[str], margin_in: flo
             is_bullet_list = bool(re.search(r"(^|\n)\s*(?:[•●]|[0-9]+[.．、])", text))
             is_body = bool(BODY_NAME_RE.search(shape_name)) or is_bullet_list
             is_label = _is_template_or_label_text(shape_name, text)
+            is_courseware_text = is_question or is_options or is_body
             if is_question or is_options or is_body or QUESTION_RE.search(text):
                 has_courseware_content = True
 
             if _content_outside_slide(bounds, slide_w, slide_h):
                 warnings.append(_warning(slide_index, "text", shape_name, "text_outside_slide", bounds, text))
-            elif not is_label and _content_near_edge(bounds, slide_w, slide_h, margin):
+            elif "Option Label" in shape_name and LABEL_RE.match(text.strip()) and _outside_safe_area(bounds, safe):
+                warnings.append(_warning(slide_index, "text", shape_name, "option_label_near_template_border", bounds, text))
+            elif not is_label and is_courseware_text and (
+                _content_near_edge(bounds, slide_w, slide_h, margin) or _outside_safe_area(bounds, safe)
+            ):
                 warnings.append(_warning(slide_index, "text", shape_name, "text_near_safe_edge", bounds, text))
 
             if hard_breaks and len(normalized) >= 18:
@@ -282,7 +311,6 @@ def _layout_warnings(zf: zipfile.ZipFile, slide_names: list[str], margin_in: flo
                 warnings.append(_warning(slide_index, "text", shape_name, "question_text_box_too_narrow", bounds, text))
             if LABEL_RE.match(text.strip()) and "\n" in text:
                 warnings.append(_warning(slide_index, "text", shape_name, "label_contains_line_break", bounds, text))
-            is_courseware_text = is_question or is_options or is_body
             if is_courseware_text and empty_paragraphs:
                 item = _warning(slide_index, "text", shape_name, "empty_paragraph_in_content", bounds, text)
                 item["empty_paragraphs"] = empty_paragraphs
@@ -320,7 +348,7 @@ def _layout_warnings(zf: zipfile.ZipFile, slide_names: list[str], margin_in: flo
 
             if _content_outside_slide(bounds, slide_w, slide_h):
                 warnings.append(_warning(slide_index, "image", pic_name, "image_outside_slide", bounds))
-            elif _content_near_edge(bounds, slide_w, slide_h, margin):
+            elif _content_near_edge(bounds, slide_w, slide_h, margin) or _outside_safe_area(bounds, safe):
                 warnings.append(_warning(slide_index, "image", pic_name, "image_near_safe_edge", bounds))
 
             is_wide_option_image = cx > slide_w * 0.35 and cy > slide_h * 0.12

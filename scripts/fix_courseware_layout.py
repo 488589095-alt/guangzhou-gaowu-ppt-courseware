@@ -30,7 +30,7 @@ NS = {"p": P, "a": A, "a14": A14, "m": M, "r": R, "pr": PR}
 
 EMU_PER_IN = 914400
 OPTION_LINE_SPACING = 150000
-OPTION_SPACE_AFTER = 1000
+OPTION_SPACE_AFTER = 0
 
 QUESTION_NAME_RE = re.compile(r"(?:Problem Stem|stem)", re.I)
 OPTION_NAME_RE = re.compile(r"(?:Options|options)", re.I)
@@ -471,11 +471,18 @@ def dynamic_pictures(root) -> list:
 
 def safe_area(slide_w: int, slide_h: int) -> tuple[int, int, int, int]:
     w_in = to_in(slide_w)
-    h_in = to_in(slide_h)
-    left = emu(0.52 if w_in <= 10.5 else 0.75 if w_in <= 14 else 1.15)
-    right = slide_w - emu(0.52 if w_in <= 10.5 else 0.75 if w_in <= 14 else 0.85)
-    top = emu(0.52 if h_in <= 6 else 0.65)
-    bottom = slide_h - emu(0.35 if h_in <= 6 else 0.55)
+    if w_in <= 10.5:
+        # The parchment/Egypt-style templates have an inner ornamental frame.
+        # Content must stay inside that frame, not merely inside the slide.
+        left = emu(0.62)
+        right = slide_w - emu(0.85)
+        top = emu(0.62)
+        bottom = slide_h - emu(0.78)
+    else:
+        left = emu(0.75 if w_in <= 14 else 1.15)
+        right = slide_w - emu(0.75 if w_in <= 14 else 0.85)
+        top = emu(0.65)
+        bottom = slide_h - emu(0.62)
     return left, top, right, bottom
 
 
@@ -507,7 +514,10 @@ def fit_into_box(bounds: tuple[int, int, int, int], box: tuple[int, int, int, in
 
 
 def has_options_shape(root) -> bool:
-    return any(OPTION_NAME_RE.search(shape_name(sp)) for sp in root.findall(".//p:sp", NS))
+    return any(
+        OPTION_NAME_RE.search(shape_name(sp)) and text_paragraphs(sp)
+        for sp in root.findall(".//p:sp", NS)
+    )
 
 
 def find_first_text_shape(root, pattern: re.Pattern[str]):
@@ -578,8 +588,8 @@ def layout_question_media(root, slide_w: int, slide_h: int, safe: tuple[int, int
             changed += 1
         return changed
 
-    opt_ratio = 0.48 if to_in(slide_w) <= 10.5 else 0.43
-    min_opt_w = emu(3.65 if to_in(slide_w) <= 10.5 else 6.4 if to_in(slide_w) >= 18 else 4.8)
+    opt_ratio = 0.62 if to_in(slide_w) <= 10.5 else 0.58
+    min_opt_w = emu(5.35 if to_in(slide_w) <= 10.5 else 7.6 if to_in(slide_w) >= 18 else 6.65)
     max_opt_w = safe_w - gap - emu(2.0)
     opt_w = max(emu(2.3), min(max_opt_w, max(min_opt_w, int(safe_w * opt_ratio))))
     opt_text = "\n".join(normalize_options(text_paragraphs(options)))
@@ -776,6 +786,13 @@ def repair_text_layout(root, slide_w: int, slide_h: int) -> dict[str, int]:
             normalized = normalize_bullets(paras)
             if normalized != paras and normalized:
                 replace_paragraphs(sp, [make_text_para(p, style, line_spacing=125000) for p in normalized])
+                stats["bodies"] += 1
+            nx = max(x, left)
+            ny = max(y, top)
+            nw = min(w, right - nx)
+            nh = min(max(h, estimated_text_height("\n".join(normalized or paras), nw, int(style.get("size", 22)), 1.25)), bottom - ny)
+            if nw > 0 and nh > 0 and (nx, ny, nw, nh) != (x, y, w, h):
+                set_bounds(sp, nx, ny, nw, nh)
                 stats["bodies"] += 1
 
     return stats
