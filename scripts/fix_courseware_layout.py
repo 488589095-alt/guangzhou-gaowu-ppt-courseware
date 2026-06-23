@@ -523,10 +523,10 @@ def safe_area(slide_w: int, slide_h: int) -> tuple[int, int, int, int]:
         top = emu(0.62)
         bottom = slide_h - emu(0.78)
     else:
-        left = emu(0.75 if w_in <= 14 else 1.55)
-        right = slide_w - emu(0.75 if w_in <= 14 else 1.25)
-        top = emu(0.65 if w_in <= 14 else 0.9)
-        bottom = slide_h - emu(0.62 if w_in <= 14 else 0.9)
+        left = emu(0.75 if w_in <= 14 else 1.9)
+        right = slide_w - emu(0.75 if w_in <= 14 else 1.55)
+        top = emu(0.65 if w_in <= 14 else 1.0)
+        bottom = slide_h - emu(0.62 if w_in <= 14 else 1.05)
     return left, top, right, bottom
 
 
@@ -636,12 +636,16 @@ def layout_question_media(root, slide_w: int, slide_h: int, safe: tuple[int, int
     if is_short_text_option_image_page(option_items, pics):
         opt_style = first_run_style(options)
         opt_w = emu(1.28 if to_in(slide_w) <= 10.5 else 1.6)
-        set_bounds(options, left, content_top, opt_w, content_h)
+        compact_gap = emu(0.2 if to_in(slide_w) <= 10.5 else 0.3)
+        max_fig_w = min(right - left - opt_w - compact_gap, emu(6.15 if to_in(slide_w) <= 10.5 else 10.5))
+        group_w = opt_w + compact_gap + max_fig_w
+        group_x = left + max(0, int((right - left - group_w) / 2))
+        set_bounds(options, group_x, content_top, opt_w, content_h)
         replace_paragraphs(options, [make_option_para(opt, opt_style) for opt in option_items])
         b = shape_bounds(pics[0])
         if b is not None:
-            fig_x = left + opt_w + gap
-            fig_w = right - fig_x
+            fig_x = group_x + opt_w + compact_gap
+            fig_w = max_fig_w
             nb = fit_into_box(b, (fig_x, content_top, fig_w, content_h))
             set_bounds(pics[0], *nb)
         return changed + 2
@@ -799,6 +803,35 @@ def center_wide_images(root, slide_w: int, slide_h: int, safe: tuple[int, int, i
     return changed
 
 
+def repair_wide_template_labels(root, slide_w: int, slide_h: int) -> int:
+    """Move yellow-frame question labels away from the inner border."""
+
+    if to_in(slide_w) < 18:
+        return 0
+    has_question_content = find_first_text_shape(root, QUESTION_NAME_RE) is not None or any(
+        OPTION_NAME_RE.search(shape_name(sp)) and text_paragraphs(sp)
+        for sp in root.findall(".//p:sp", NS)
+    )
+    if not has_question_content:
+        return 0
+    changed = 0
+    for sp in root.findall(".//p:sp", NS):
+        name = shape_name(sp)
+        text = text_content(sp, "")
+        bounds = shape_bounds(sp)
+        if bounds is None or not text:
+            continue
+        x, y, w, h = bounds
+        is_question_label = "Freeform" in name and y < emu(0.55) and x < emu(0.35) and len(text) <= 10
+        if is_question_label:
+            nx = emu(0.75)
+            ny = emu(0.42)
+            if (nx, ny) != (x, y):
+                set_bounds(sp, nx, ny, w, h)
+                changed += 1
+    return changed
+
+
 def repair_text_layout(root, slide_w: int, slide_h: int) -> dict[str, int]:
     stats = {"stems": 0, "options": 0, "bodies": 0}
     safe = safe_area(slide_w, slide_h)
@@ -887,6 +920,7 @@ def repair_pptx(src: Path, dst: Path) -> dict[str, int]:
 
     for name in slide_names:
         root = parse(entries[name])
+        totals["images"] += repair_wide_template_labels(root, slide_w, slide_h)
         text_stats = repair_text_layout(root, slide_w, slide_h)
         for key in ("stems", "options", "bodies"):
             totals[key] += text_stats[key]
