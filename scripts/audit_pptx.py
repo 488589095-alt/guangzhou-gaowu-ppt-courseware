@@ -231,10 +231,10 @@ def _safe_area(slide_w: int, slide_h: int) -> tuple[int, int, int, int]:
             slide_h - int(0.78 * EMU_PER_INCH),
         )
     return (
-        int((0.75 if w_in <= 14 else 1.9) * EMU_PER_INCH),
+        int((0.75 if w_in <= 14 else 0.85) * EMU_PER_INCH),
         int((0.65 if w_in <= 14 else 1.0) * EMU_PER_INCH),
-        slide_w - int((0.75 if w_in <= 14 else 1.55) * EMU_PER_INCH),
-        slide_h - int((0.62 if w_in <= 14 else 1.05) * EMU_PER_INCH),
+        slide_w - int((0.75 if w_in <= 14 else 0.8) * EMU_PER_INCH),
+        slide_h - int((0.62 if w_in <= 14 else 0.75) * EMU_PER_INCH),
     )
 
 

@@ -523,10 +523,10 @@ def safe_area(slide_w: int, slide_h: int) -> tuple[int, int, int, int]:
         top = emu(0.62)
         bottom = slide_h - emu(0.78)
     else:
-        left = emu(0.75 if w_in <= 14 else 1.9)
-        right = slide_w - emu(0.75 if w_in <= 14 else 1.55)
+        left = emu(0.75 if w_in <= 14 else 0.85)
+        right = slide_w - emu(0.75 if w_in <= 14 else 0.8)
         top = emu(0.65 if w_in <= 14 else 1.0)
-        bottom = slide_h - emu(0.62 if w_in <= 14 else 1.05)
+        bottom = slide_h - emu(0.62 if w_in <= 14 else 0.75)
     return left, top, right, bottom
 
 
@@ -569,6 +569,74 @@ def find_first_text_shape(root, pattern: re.Pattern[str]):
         if pattern.search(shape_name(sp)) and text_paragraphs(sp):
             return sp
     return None
+
+
+def layout_wide_frame_question_media(
+    stem,
+    options,
+    pics: list,
+    slide_w: int,
+    slide_h: int,
+    safe: tuple[int, int, int, int],
+) -> int:
+    """Match the yellow-frame template: stem top, image middle, options bottom."""
+
+    if to_in(slide_w) < 18 or not pics:
+        return 0
+    option_items = normalize_options(text_paragraphs(options))
+    if len(option_items) < 2:
+        return 0
+
+    left, _top, right, bottom = safe
+    changed = 0
+    stem_style = first_run_style(stem)
+    opt_style = first_run_style(options)
+    stem_text = normalize_sentence("".join(text_paragraphs(stem)))
+    stem_size = int(stem_style.get("size", 22))
+    stem_y = emu(1.08)
+    stem_w = right - left
+    stem_h = max(emu(0.7), estimated_text_height(stem_text, stem_w, stem_size, 1.18))
+    set_bounds(stem, left, stem_y, stem_w, stem_h)
+    replace_paragraphs(stem, [make_text_para(stem_text, stem_style, line_spacing=120000)])
+    changed += 1
+
+    opt_size = int(opt_style.get("size", 22))
+    horizontal_text = "        ".join(option_items)
+    can_be_one_line = estimated_single_line_width(horizontal_text, opt_size) <= right - left
+    if can_be_one_line:
+        opt_h = max(emu(0.95), estimated_text_height(horizontal_text, right - left, opt_size, 1.15))
+        opt_y = bottom - opt_h - emu(0.05)
+        set_bounds(options, left + emu(0.35), opt_y, right - left - emu(0.7), opt_h)
+        replace_paragraphs(options, [make_text_para(horizontal_text, opt_style, line_spacing=OPTION_LINE_SPACING)])
+    else:
+        opt_text = "\n".join(option_items)
+        opt_h = max(emu(1.4), estimated_text_height(opt_text, right - left - emu(0.4), opt_size, 1.5))
+        opt_h = min(opt_h, max(emu(1.4), int((bottom - stem_y - stem_h) * 0.45)))
+        opt_y = bottom - opt_h - emu(0.05)
+        set_bounds(options, left + emu(0.35), opt_y, right - left - emu(0.7), opt_h)
+        replace_paragraphs(options, [make_option_para(opt, opt_style) for opt in option_items])
+    changed += 1
+
+    pic_top = stem_y + stem_h + emu(0.18)
+    pic_bottom = opt_y - emu(0.25)
+    pic_h = max(emu(0.8), pic_bottom - pic_top)
+    pic_box = (left + emu(0.75), pic_top, right - left - emu(1.5), pic_h)
+    if len(pics) == 1:
+        b = shape_bounds(pics[0])
+        if b is not None:
+            set_bounds(pics[0], *fit_into_box(b, pic_box))
+            changed += 1
+    else:
+        gap = emu(0.25)
+        each_w = int((pic_box[2] - gap) / 2)
+        for idx, pic in enumerate(pics[:2]):
+            b = shape_bounds(pic)
+            if b is None:
+                continue
+            box = (pic_box[0] + idx * (each_w + gap), pic_box[1], each_w, pic_box[3])
+            set_bounds(pic, *fit_into_box(b, box))
+            changed += 1
+    return changed
 
 
 def layout_question_media(root, slide_w: int, slide_h: int, safe: tuple[int, int, int, int]) -> int:
@@ -633,13 +701,21 @@ def layout_question_media(root, slide_w: int, slide_h: int, safe: tuple[int, int
         return changed
 
     option_items = normalize_options(text_paragraphs(options))
+    if to_in(slide_w) >= 18:
+        wide_changed = layout_wide_frame_question_media(stem, options, pics, slide_w, slide_h, safe)
+        if wide_changed:
+            return changed + wide_changed
+
     if is_short_text_option_image_page(option_items, pics):
         opt_style = first_run_style(options)
-        opt_w = emu(1.28 if to_in(slide_w) <= 10.5 else 1.6)
-        compact_gap = emu(0.2 if to_in(slide_w) <= 10.5 else 0.3)
-        max_fig_w = min(right - left - opt_w - compact_gap, emu(6.15 if to_in(slide_w) <= 10.5 else 10.5))
+        opt_w = emu(0.95 if to_in(slide_w) <= 10.5 else 1.6)
+        compact_gap = emu(0.1 if to_in(slide_w) <= 10.5 else 0.3)
+        max_fig_w = min(right - left - opt_w - compact_gap, emu(5.75 if to_in(slide_w) <= 10.5 else 10.5))
         group_w = opt_w + compact_gap + max_fig_w
-        group_x = left + max(0, int((right - left - group_w) / 2))
+        if to_in(slide_w) <= 10.5:
+            group_x = min(left + emu(0.28), right - group_w)
+        else:
+            group_x = left + max(0, int((right - left - group_w) / 2))
         set_bounds(options, group_x, content_top, opt_w, content_h)
         replace_paragraphs(options, [make_option_para(opt, opt_style) for opt in option_items])
         b = shape_bounds(pics[0])
@@ -824,8 +900,8 @@ def repair_wide_template_labels(root, slide_w: int, slide_h: int) -> int:
         x, y, w, h = bounds
         is_question_label = "Freeform" in name and y < emu(0.55) and x < emu(0.35) and len(text) <= 10
         if is_question_label:
-            nx = emu(0.75)
-            ny = emu(0.42)
+            nx = emu(0.55)
+            ny = emu(0.35)
             if (nx, ny) != (x, y):
                 set_bounds(sp, nx, ny, w, h)
                 changed += 1
