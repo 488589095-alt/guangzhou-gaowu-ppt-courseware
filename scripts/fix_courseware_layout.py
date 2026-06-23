@@ -439,6 +439,23 @@ def formula_needed(expr: str) -> bool:
     return "√" in expr or bool(FORMULA_ONLY_RE.match(expr))
 
 
+def option_body_text(option: str) -> str:
+    match = OPTION_PREFIX_RE.match(option.strip())
+    return match.group(2).strip() if match else option.strip()
+
+
+def is_short_text_option_image_page(options: list[str], pics: list) -> bool:
+    if len(pics) != 1 or len(options) != 4:
+        return False
+    bodies = [option_body_text(opt) for opt in options]
+    if not all(1 <= len(body) <= 4 for body in bodies):
+        return False
+    b = shape_bounds(pics[0])
+    if b is None or b[3] <= 0:
+        return False
+    return b[2] / b[3] >= 1.8
+
+
 def make_text_para(text: str, style: dict[str, object], line_spacing: int | None = None, align: str | None = None):
     p_el = etree.Element(q(A, "p"))
     ppr = make_ppr(line_spacing=line_spacing, align=align)
@@ -615,6 +632,20 @@ def layout_question_media(root, slide_w: int, slide_h: int, safe: tuple[int, int
             changed += 1
         return changed
 
+    option_items = normalize_options(text_paragraphs(options))
+    if is_short_text_option_image_page(option_items, pics):
+        opt_style = first_run_style(options)
+        opt_w = emu(1.28 if to_in(slide_w) <= 10.5 else 1.6)
+        set_bounds(options, left, content_top, opt_w, content_h)
+        replace_paragraphs(options, [make_option_para(opt, opt_style) for opt in option_items])
+        b = shape_bounds(pics[0])
+        if b is not None:
+            fig_x = left + opt_w + gap
+            fig_w = right - fig_x
+            nb = fit_into_box(b, (fig_x, content_top, fig_w, content_h))
+            set_bounds(pics[0], *nb)
+        return changed + 2
+
     opt_ratio = 0.72 if to_in(slide_w) <= 10.5 else 0.6
     min_opt_w = emu(6.15 if to_in(slide_w) <= 10.5 else 7.6 if to_in(slide_w) >= 18 else 6.65)
     max_opt_w = safe_w - gap - emu(1.45 if to_in(slide_w) <= 10.5 else 3.1 if to_in(slide_w) >= 18 else 2.6)
@@ -623,7 +654,7 @@ def layout_question_media(root, slide_w: int, slide_h: int, safe: tuple[int, int
     opt_style = first_run_style(options)
     opt_size = int(opt_style.get("size", 22))
     no_wrap_w = max(
-        [estimated_single_line_width(opt, opt_size) for opt in normalize_options(text_paragraphs(options))] or [0]
+        [estimated_single_line_width(opt, opt_size) for opt in option_items] or [0]
     )
     if no_wrap_w <= max_opt_w:
         opt_w = max(opt_w, no_wrap_w)
@@ -640,7 +671,7 @@ def layout_question_media(root, slide_w: int, slide_h: int, safe: tuple[int, int
     fig_x = left + opt_w + gap
     fig_w = max(emu(1.5), right - fig_x)
     set_bounds(options, left, content_top, opt_w, content_h)
-    replace_paragraphs(options, [make_option_para(opt, opt_style) for opt in normalize_options(text_paragraphs(options))])
+    replace_paragraphs(options, [make_option_para(opt, opt_style) for opt in option_items])
     changed += 1
 
     if len(pics) == 1:
