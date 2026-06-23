@@ -147,9 +147,10 @@ def _estimated_text_height(elem: ET.Element, bounds: tuple[int, int, int, int], 
     return int(height_pt / 72 * EMU_PER_INCH)
 
 
-def _text_and_breaks(elem: ET.Element) -> tuple[str, int, int]:
+def _text_and_breaks(elem: ET.Element) -> tuple[str, int, int, int]:
     paragraphs: list[str] = []
     hard_breaks = 0
+    empty_paragraphs = 0
     for para in elem.findall(".//a:p", PPT_NS):
         pieces: list[str] = []
         for child in para.iter():
@@ -161,7 +162,9 @@ def _text_and_breaks(elem: ET.Element) -> tuple[str, int, int]:
         text = "".join(pieces).strip()
         if text:
             paragraphs.append(text)
-    return "\n".join(paragraphs), hard_breaks, len(paragraphs)
+        elif pieces or list(para):
+            empty_paragraphs += 1
+    return "\n".join(paragraphs), hard_breaks, len(paragraphs), empty_paragraphs
 
 
 def _warning(
@@ -251,7 +254,7 @@ def _layout_warnings(zf: zipfile.ZipFile, slide_names: list[str], margin_in: flo
 
         for shape in root.findall(".//p:sp", PPT_NS):
             bounds = _shape_bounds(shape)
-            text, hard_breaks, paragraph_count = _text_and_breaks(shape)
+            text, hard_breaks, paragraph_count, empty_paragraphs = _text_and_breaks(shape)
             if bounds is None or not text:
                 continue
             shape_name = _shape_name(shape)
@@ -280,6 +283,10 @@ def _layout_warnings(zf: zipfile.ZipFile, slide_names: list[str], margin_in: flo
             if LABEL_RE.match(text.strip()) and "\n" in text:
                 warnings.append(_warning(slide_index, "text", shape_name, "label_contains_line_break", bounds, text))
             is_courseware_text = is_question or is_options or is_body
+            if is_courseware_text and empty_paragraphs:
+                item = _warning(slide_index, "text", shape_name, "empty_paragraph_in_content", bounds, text)
+                item["empty_paragraphs"] = empty_paragraphs
+                warnings.append(item)
             if not is_label and is_courseware_text:
                 estimated_h = _estimated_text_height(shape, bounds, text, paragraph_count)
                 x, y, cx, cy = bounds
